@@ -1,7 +1,8 @@
+import random
 import re
 
 from PyQt6.QtGui import QStandardItemModel, QStandardItem
-from PyQt6.QtWidgets import QDialog
+from PyQt6.QtWidgets import QDialog, QAbstractItemView
 
 from linvam.ui_soundactioneditwnd import Ui_SoundSelect
 from linvam.util import get_voice_packs_folder_path, Command
@@ -19,7 +20,7 @@ class SoundActionEditWnd(QDialog):
         self.p_sounds = p_sounds
         self.selected_voice_pack = None
         self.selected_category = None
-        self.selected_file = None
+        self.selected_files = []  # Changed to list to support multiple files
         self.m_sound_action = {}
 
         self.ui.buttonOkay.clicked.connect(self.slot_ok)
@@ -34,7 +35,11 @@ class SoundActionEditWnd(QDialog):
         if p_sound_action is not None:
             self.selected_voice_pack = p_sound_action['pack']
             self.selected_category = p_sound_action['cat']
-            self.selected_file = p_sound_action['file']
+            # Support both old single-file format and new multi-file format
+            if 'files' in p_sound_action:
+                self.selected_files = p_sound_action['files'][:]
+            elif 'file' in p_sound_action:
+                self.selected_files = [p_sound_action['file']]
             self.ui.buttonOkay.setEnabled(True)
 
         self.list_voice_packs_model = QStandardItemModel()
@@ -47,6 +52,8 @@ class SoundActionEditWnd(QDialog):
 
         self.list_files_model = QStandardItemModel()
         self.ui.listFiles.setModel(self.list_files_model)
+        # Enable multi-selection for files
+        self.ui.listFiles.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.ui.listFiles.clicked.connect(self.on_file_select)
         self.ui.listFiles.doubleClicked.connect(self.select_and_play)
 
@@ -67,7 +74,7 @@ class SoundActionEditWnd(QDialog):
             'name': Command.PLAY_SOUND,
             'pack': self.selected_voice_pack,
             'cat': self.selected_category,
-            'file': self.selected_file
+            'files': self.selected_files  # Save as array of files
         }
         super().accept()
 
@@ -91,11 +98,17 @@ class SoundActionEditWnd(QDialog):
         self.ui.buttonPlaySound.setEnabled(False)
 
     def on_file_select(self):
-        index = self.ui.listFiles.currentIndex()
-        item_text = index.data()
-        self.selected_file = item_text
-        self.ui.buttonOkay.setEnabled(True)
-        self.ui.buttonPlaySound.setEnabled(True)
+        # Get all selected files
+        selected_indexes = self.ui.listFiles.selectedIndexes()
+        self.selected_files = [index.data() for index in selected_indexes]
+
+        # Enable buttons if at least one file is selected
+        if self.selected_files:
+            self.ui.buttonOkay.setEnabled(True)
+            self.ui.buttonPlaySound.setEnabled(True)
+        else:
+            self.ui.buttonOkay.setEnabled(False)
+            self.ui.buttonPlaySound.setEnabled(False)
 
     def select_and_play(self):
         self.on_file_select()
@@ -109,7 +122,7 @@ class SoundActionEditWnd(QDialog):
             self.list_categories_model.removeRows(0, self.list_categories_model.rowCount())
             self.list_files_model.removeRows(0, self.list_files_model.rowCount())
             self.selected_category = None
-            self.selected_file = None
+            self.selected_files = []
 
         filter_categories = self.ui.filterCategories.toPlainText()
         if len(filter_categories) == 0:
@@ -129,7 +142,7 @@ class SoundActionEditWnd(QDialog):
 
         if reset:
             self.list_files_model.removeRows(0, self.list_files_model.rowCount())
-            self.selected_file = None
+            self.selected_files = []
 
         filter_files = self.ui.filterFiles.toPlainText()
         if len(filter_files) == 0:
@@ -144,8 +157,14 @@ class SoundActionEditWnd(QDialog):
             self.list_files_model.appendRow(item)
 
     def play_sound(self):
+        if not self.selected_files:
+            return
+
+        # If multiple files selected, randomly choose one to preview
+        selected_file = random.choice(self.selected_files)
+
         sound_file = (get_voice_packs_folder_path() + self.selected_voice_pack + '/' + self.selected_category + '/'
-                      + self.selected_file)
+                      + selected_file)
         self.p_sounds.play(sound_file)
         self.ui.buttonStopSound.setEnabled(True)
 
@@ -166,9 +185,14 @@ class SoundActionEditWnd(QDialog):
                 index = self.list_categories_model.indexFromItem(item[0])
                 self.ui.listCategories.setCurrentIndex(index)
 
-        if self.selected_file is not None:
-            item = self.list_files_model.findItems(self.selected_file)
-            if len(item) > 0:
-                index = self.list_files_model.indexFromItem(item[0])
-                self.ui.listFiles.setCurrentIndex(index)
-                self.ui.buttonPlaySound.setEnabled(True)
+        # Select multiple files if they were previously selected
+        if self.selected_files:
+            for file_name in self.selected_files:
+                items = self.list_files_model.findItems(file_name)
+                if len(items) > 0:
+                    index = self.list_files_model.indexFromItem(items[0])
+                    self.ui.listFiles.selectionModel().select(
+                        index,
+                        self.ui.listFiles.selectionModel().SelectionFlag.Select
+                    )
+            self.ui.buttonPlaySound.setEnabled(True)
