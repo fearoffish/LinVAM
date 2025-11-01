@@ -1,6 +1,7 @@
 import itertools
 import json
 import os
+import random
 import re
 import shlex
 import signal
@@ -527,8 +528,19 @@ class ProfileExecutor(threading.Thread):
             del self.m_cmd_threads[p_cmd_name]
 
     def _play_sound(self, p_cmd_name):
+        # Support both single file (backward compatibility) and multiple files with random selection
+        if 'files' in p_cmd_name and p_cmd_name['files']:
+            # Multiple files - randomly choose one
+            selected_file = random.choice(p_cmd_name['files'])
+        elif 'file' in p_cmd_name:
+            # Single file (backward compatibility)
+            selected_file = p_cmd_name['file']
+        else:
+            print("ERROR - No sound file specified in action")
+            return
+
         sound_file = (get_voice_packs_folder_path() + p_cmd_name['pack'] + '/' + p_cmd_name['cat'] + '/'
-                      + p_cmd_name['file'])
+                      + selected_file)
         self.m_sound.play(sound_file)
 
     def _press_key(self, action):
