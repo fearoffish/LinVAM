@@ -1,6 +1,7 @@
 import itertools
 import json
 import os
+import random
 import re
 import shlex
 import signal
@@ -305,6 +306,10 @@ class ProfileExecutor(threading.Thread):
             print('Detection stopped')
 
     def shutdown(self):
+        # Stop all running command threads
+        for cmd_name in list(self.m_cmd_threads.keys()):
+            self._stop_command(cmd_name)
+
         self.m_sound.stop()
         self._stop()
         if self.ydotoold is not None:
@@ -462,6 +467,7 @@ class ProfileExecutor(threading.Thread):
     class CommandThread(threading.Thread):
         def __init__(self, p_profile_executor, p_actions, p_repeat):
             threading.Thread.__init__(self)
+            self.daemon = True  # Allow app to exit even if thread is running
             self.profile_executor = p_profile_executor
             self.m_actions = p_actions
             self.m_repeat = p_repeat
@@ -527,8 +533,19 @@ class ProfileExecutor(threading.Thread):
             del self.m_cmd_threads[p_cmd_name]
 
     def _play_sound(self, p_cmd_name):
+        # Support both single file (backward compatibility) and multiple files with random selection
+        if 'files' in p_cmd_name and p_cmd_name['files']:
+            # Multiple files - randomly choose one
+            selected_file = random.choice(p_cmd_name['files'])
+        elif 'file' in p_cmd_name:
+            # Single file (backward compatibility)
+            selected_file = p_cmd_name['file']
+        else:
+            print("ERROR - No sound file specified in action")
+            return
+
         sound_file = (get_voice_packs_folder_path() + p_cmd_name['pack'] + '/' + p_cmd_name['cat'] + '/'
-                      + p_cmd_name['file'])
+                      + selected_file)
         self.m_sound.play(sound_file)
 
     def _press_key(self, action):
