@@ -306,6 +306,10 @@ class ProfileExecutor(threading.Thread):
             print('Detection stopped')
 
     def shutdown(self):
+        # Stop all running command threads
+        for cmd_name in list(self.m_cmd_threads.keys()):
+            self._stop_command(cmd_name)
+
         self.m_sound.stop()
         self._stop()
         if self.ydotoold is not None:
@@ -463,6 +467,7 @@ class ProfileExecutor(threading.Thread):
     class CommandThread(threading.Thread):
         def __init__(self, p_profile_executor, p_actions, p_repeat):
             threading.Thread.__init__(self)
+            self.daemon = True  # Allow app to exit even if thread is running
             self.profile_executor = p_profile_executor
             self.m_actions = p_actions
             self.m_repeat = p_repeat
