@@ -61,12 +61,15 @@ class EventDevice(object):
                 self._input_file = open(self.path, 'rb')
             except IOError as e:
                 if e.strerror == 'Permission denied':
-                    print("# ERROR: Failed to read device '{}'. You must be in the 'input' group to access global events. Use 'sudo usermod -a -G input USERNAME' to add user to the required group.".format(self.path))
-                    exit()
+                    # Silently skip devices we can't access - other devices may work fine
+                    # If ALL devices fail, the aggregated device will handle the error
+                    return None
+                # Re-raise non-permission errors
+                raise
 
             def try_close():
                 try:
-                    self._input_file.close
+                    self._input_file.close()
                 except:
                     pass
             atexit.register(try_close)
@@ -80,6 +83,9 @@ class EventDevice(object):
         return self._output_file
 
     def read_event(self):
+        if self.input_file is None:
+            # Device couldn't be opened, skip it
+            return None
         data = self.input_file.read(struct.calcsize(event_bin_format))
         seconds, microseconds, type, code, value = struct.unpack(event_bin_format, data)
         return seconds + microseconds / 1e6, type, code, value, self.path
@@ -103,9 +109,14 @@ class AggregatedEventDevice(object):
         self.output = output or self.devices[0]
         def start_reading(device):
             while True:
-                self.event_queue.put(device.read_event())
+                event = device.read_event()
+                if event is not None:
+                    self.event_queue.put(event)
         for device in self.devices:
             if device is None:
+                continue
+            # Skip devices that can't be opened
+            if device.input_file is None:
                 continue
             thread = Thread(target=start_reading, args=[device])
             thread.daemon = True
