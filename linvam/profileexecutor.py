@@ -482,7 +482,8 @@ class ProfileExecutor(threading.Thread):
 
         def stop(self):
             self.m_stop = True
-            threading.Thread.join(self)
+            # Don't join() - just signal the thread to stop
+            # Since it's a daemon thread, it will be terminated when the process exits
 
     def _do_command(self, p_cmd_name):
         w_command = self._get_command_for_executing(p_cmd_name)

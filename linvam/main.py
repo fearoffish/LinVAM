@@ -4,6 +4,7 @@ import signal
 import sys
 
 from PyQt6.QtWidgets import QWidget, QDialog, QInputDialog, QMessageBox, QLineEdit, QFileDialog, QApplication
+from PyQt6.QtCore import QTimer
 
 from linvam import keyboard, mouse, __version__
 from linvam.mouse import ButtonEvent
@@ -317,6 +318,21 @@ class MainWnd(QWidget):
         self._stop_mouse_listener()
         delete_linvam_run_file()
         event.accept()
+        # Defer quit() call to allow closeEvent to complete
+        QTimer.singleShot(0, self._do_quit)
+
+    def _do_quit(self):
+        import threading
+        import os
+
+        # Try to quit the Qt event loop normally
+        QApplication.quit()
+
+        # Force exit if event loop doesn't quit cleanly (fallback)
+        # All cleanup is already done in closeEvent, so this is safe
+        exit_timer = threading.Timer(0.5, lambda: os._exit(0))
+        exit_timer.daemon = True
+        exit_timer.start()
 
 
 def start_linvam():
