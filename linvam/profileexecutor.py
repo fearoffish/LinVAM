@@ -19,7 +19,7 @@ from linvam.mouse import nixmouse as _os_mouse
 from linvam.soundfiles import SoundFiles
 from linvam.util import (get_language_code, get_voice_packs_folder_path, get_language_name, YDOTOOLD_SOCKET_PATH,
                          KEYS_SPLITTER, save_to_commands_file, is_push_to_listen, get_push_to_listen_hotkey, Command,
-                         Config)
+                         Config, find_best_vosk_model)
 
 COMMAND_NAME_COMMA_SPLIT_REGGEX = r",(?![^\[]*\])"
 
@@ -138,6 +138,8 @@ class ProfileExecutor(threading.Thread):
         self.samplerate = int(device_info['default_samplerate'])
 
         self.recognizer = None
+        self.grammar_supported = False
+        self.grammar_warning_shown = False
 
         self.m_sound = SoundFiles()
 
@@ -157,19 +159,66 @@ class ProfileExecutor(threading.Thread):
     # noinspection PyUnusedLocal
     # pylint: disable=unused-argument
     def listen_callback(self, in_data, frame_count, time_info, status):
-        result_string = self.get_listen_result(in_data)
+        result_string, _ = self.get_listen_result(in_data)
         if not result_string:
+            return
+        # Filter out ignored single words (false positives from background noise)
+        if self._is_ignored_single_word(result_string):
             return
         self.check_commands(result_string)
 
     # noinspection PyUnusedLocal
     # pylint: disable=unused-argument
     def listen_callback_debug(self, in_data, frame_count, time_info, status):
-        result_string = self.get_listen_result(in_data)
+        result_string, result_detail = self.get_listen_result(in_data)
         if not result_string:
             return
-        print(str(result_string))
+
+        # Filter out ignored single words (false positives from background noise)
+        if self._is_ignored_single_word(result_string):
+            print(f'[Ignored single word: "{result_string}"]')
+            return
+
+        # Show detailed word-level confidence if available
+        if result_detail:
+            print(f'Recognized: {result_string}')
+            if 'result' in result_detail:
+                words = result_detail['result']
+                print('Word-level confidence:')
+                for word_info in words:
+                    word = word_info.get('word', '')
+                    conf = word_info.get('conf', 0.0)
+                    print(f'  {word}: {conf:.2f}')
+            # Show warning if grammar should have prevented this but didn't
+            if not self.grammar_supported and not self.grammar_warning_shown:
+                # Check if any words in the result aren't in any commands
+                recognized_words = set(result_string.split())
+                all_command_words = set()
+                for cmd in self.commands_list:
+                    all_command_words.update(cmd.split())
+                unexpected_words = recognized_words - all_command_words
+                if unexpected_words:
+                    print(f'⚠ Words not in command list: {unexpected_words}')
+                    print('  (This is why you need grammar constraint support!)')
+                    self.grammar_warning_shown = True
+        else:
+            print(str(result_string))
         self.check_commands(result_string)
+
+    def _is_ignored_single_word(self, result_string):
+        """Check if result is a single word in the ignore list (common false positives)."""
+        # Only check single words
+        words = result_string.strip().split()
+        if len(words) != 1:
+            return False
+
+        # Get ignored words from config
+        ignored_words = self.p_parent.m_config.get(Config.IGNORED_SINGLE_WORDS, [])
+        if not ignored_words:
+            # Use default if not configured
+            ignored_words = ['the', 'a', 'an', 'but', 'their', 'there', 'they', 'be', 'to', 'of', 'and']
+
+        return result_string.lower() in ignored_words
 
     def check_commands(self, result_string):
         for command in self.commands_list:
@@ -181,18 +230,19 @@ class ProfileExecutor(threading.Thread):
 
     def get_listen_result(self, in_data):
         if self.recognizer is None:
-            return ''
+            return '', None
+        # Only process final results (when utterance is complete)
+        # This ensures grammar constraints are applied and reduces spam
+        # AcceptWaveform returns True when endpoint (silence) is detected
         if self.recognizer.AcceptWaveform(bytes(in_data)):
             result = self.recognizer.Result()
-        else:
-            result = self.recognizer.PartialResult()
-        result_json = json.loads(result)
-        try:
-            result_string = result_json['partial']
-        except KeyError:
-            return ''
-            # result_string = result_json['text']
-        return result_string
+            result_json = json.loads(result)
+            result_string = result_json.get('text', '')
+            if result_string:
+                if self.p_parent.m_config[Config.DEBUG]:
+                    print('[Endpoint detected - finalizing utterance]')
+                return result_string, result_json
+        return '', None
 
     def set_language(self, language):
         self._stop()
@@ -201,7 +251,66 @@ class ProfileExecutor(threading.Thread):
             print('Unsupported language: ' + language)
             return
         print('Language: ' + get_language_name(language))
-        self.recognizer = KaldiRecognizer(Model(lang=language_code), self.samplerate)
+
+        # Try to find the best available model (prefers lgraph for grammar support)
+        model_path = find_best_vosk_model(language_code)
+
+        if model_path:
+            # Load specific model by path
+            print(f'Loading model from: {model_path}')
+            # Check if we should use faster endpoint detection
+            self._configure_endpoint_detection(model_path)
+            self.recognizer = KaldiRecognizer(Model(model_path=model_path), self.samplerate)
+        else:
+            # Fall back to auto-detection
+            print(f'Auto-detecting model for language code: {language_code}')
+            self.recognizer = KaldiRecognizer(Model(lang=language_code), self.samplerate)
+
+        # Enable word-level details for better debugging
+        self.recognizer.SetWords(True)
+
+        # Apply grammar constraint if we have a profile loaded
+        # This needs to happen AFTER recognizer is created
+        if self.commands_list:
+            self._apply_grammar_constraint()
+
+    def _configure_endpoint_detection(self, model_path):
+        """Configure faster endpoint detection for quicker response."""
+        conf_path = os.path.join(model_path, 'conf', 'model.conf')
+        if not os.path.exists(conf_path):
+            return
+
+        # Read current config
+        with open(conf_path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+
+        # Check if already configured
+        if any('LinVAM-configured' in line for line in lines):
+            return  # Already configured
+
+        # Modify endpoint rules for faster detection (shorter silence tolerance)
+        # Default: rule2=0.5, rule3=1.0, rule4=2.0
+        # New: rule2=0.3, rule3=0.6, rule4=0.9 (more responsive)
+        modified = False
+        for i, line in enumerate(lines):
+            if 'endpoint.rule2.min-trailing-silence' in line:
+                lines[i] = '--endpoint.rule2.min-trailing-silence=0.3\n'
+                modified = True
+            elif 'endpoint.rule3.min-trailing-silence' in line:
+                lines[i] = '--endpoint.rule3.min-trailing-silence=0.6\n'
+                modified = True
+            elif 'endpoint.rule4.min-trailing-silence' in line:
+                lines[i] = '--endpoint.rule4.min-trailing-silence=0.9\n'
+                modified = True
+
+        if modified:
+            # Add marker comment
+            lines.append('# LinVAM-configured for faster endpoint detection\n')
+
+            # Write back
+            with open(conf_path, 'w', encoding='utf-8') as f:
+                f.writelines(lines)
+            print('✓ Configured faster endpoint detection (0.3/0.6/0.9s silence thresholds)')
 
     def _init_stream(self):
         if self.recognizer is None:
@@ -224,6 +333,11 @@ class ProfileExecutor(threading.Thread):
         self.m_stream.start()
 
     def set_profile(self, p_profile):
+        # Stop listening before changing profile to avoid crashes when applying grammar
+        was_listening = self.listening
+        if was_listening:
+            self._stop()
+
         self.m_profile = p_profile
         self.commands_list = []
         if self.m_profile is None:
@@ -241,6 +355,84 @@ class ProfileExecutor(threading.Thread):
         save_to_commands_file(self.commands_list)
         # this is a dirty fix until the whole keywords recognition is refactored
         self.commands_list.sort(key=len, reverse=True)
+
+        # Apply grammar constraint to improve accuracy
+        # Must be done while stream is stopped!
+        self._apply_grammar_constraint()
+
+        # Resume listening if we were listening before
+        if was_listening:
+            self._start_stream()
+            print('Detection resumed')
+
+    def _apply_grammar_constraint(self):
+        """Apply grammar constraint to limit recognition to command vocabulary only."""
+        if self.recognizer is None:
+            if self.p_parent.m_config[Config.DEBUG]:
+                print('[DEBUG] Skipping grammar constraint: recognizer not initialized yet')
+            return
+        if not self.commands_list:
+            if self.p_parent.m_config[Config.DEBUG]:
+                print('[DEBUG] Skipping grammar constraint: no commands loaded yet')
+            return
+
+        # Build a grammar JSON with all command phrases
+        # SetGrammar expects a JSON array of phrases
+        grammar = json.dumps(self.commands_list, ensure_ascii=False)
+
+        # Test if SetGrammar is supported
+        try:
+            # Check if SetGrammar method exists first
+            if not hasattr(self.recognizer, 'SetGrammar'):
+                self._show_grammar_not_supported_warning('SetGrammar method not available in this VOSK version')
+                return
+
+            # Try to apply grammar
+            self.recognizer.SetGrammar(grammar)
+
+            # SetGrammar might silently fail on some models
+            # The only way to know if it worked is to test it
+            # For now, we'll assume it worked if no exception was raised
+            # The debug output will show if unexpected words are recognized
+            self.grammar_supported = True
+
+            print('\n' + '='*70)
+            print(f'  GRAMMAR CONSTRAINT APPLIED: {len(self.commands_list)} command variations')
+            print('='*70)
+            print('⚠ NOTE: Some lgraph models accept SetGrammar but ignore it.')
+            print('  Watch debug output for words NOT in your command list.')
+            print('  If you see unexpected words, grammar is NOT working.')
+            print('='*70 + '\n')
+
+        except AttributeError as e:
+            # SetGrammar method doesn't exist
+            self._show_grammar_not_supported_warning(f'SetGrammar method not available: {e}')
+        except Exception as e:
+            # Some models don't support SetGrammar (static graph models)
+            self._show_grammar_not_supported_warning(str(e))
+
+    def _show_grammar_not_supported_warning(self, reason):
+        """Show detailed warning when grammar constraints aren't supported."""
+        self.grammar_supported = False
+        print('\n' + '!'*70)
+        print('  WARNING: GRAMMAR CONSTRAINT NOT WORKING')
+        print('!'*70)
+        print(f'Reason: {reason}')
+        print()
+        print('Your current VOSK model does NOT support grammar constraints.')
+        print('This means it will try to recognize ANY English words, not just')
+        print('your defined commands, which causes accuracy problems.')
+        print()
+        print('SMALL MODELS (vosk-model-small-*) DO NOT SUPPORT GRAMMAR.')
+        print()
+        print('To fix this, download a model that supports dynamic grammar:')
+        print()
+        print('  cd ~/.cache/vosk')
+        print('  wget https://alphacephei.com/vosk/models/vosk-model-en-us-0.22-lgraph.zip')
+        print('  unzip vosk-model-en-us-0.22-lgraph.zip')
+        print()
+        print('Then restart LinVAM.')
+        print('!'*70 + '\n')
 
     def reset_listening(self):
         if self.listening:
@@ -260,6 +452,9 @@ class ProfileExecutor(threading.Thread):
             else:
                 self._start_stream()
                 print('Detection started')
+                if not self.grammar_supported and self.p_parent.m_config[Config.DEBUG]:
+                    print('[DEBUG] Note: grammar_supported flag is False')
+                    print('[DEBUG] This may be incorrect - check for grammar constraint messages above')
                 self.listening = True
         elif self.listening and not p_enable:
             self._stop()

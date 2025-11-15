@@ -41,6 +41,7 @@ class Config(StrEnum):
     OPEN_COMMANDS_FILE = 'open_commands_file'
     DEBUG = 'debug'
     USE_YDOTOOL = 'use_ydotool'
+    IGNORED_SINGLE_WORDS = 'ignored_single_words'
 
 def get_linvam_icon(scaled_height=128):
     with open(get_asset("icons/linvam.svg"), 'rb') as svg_file:
@@ -78,6 +79,7 @@ def handle_args(config):
 def get_supported_languages():
     return [
         'English',
+        'British English',
         'Russian',
         'Chinese',
         'French',
@@ -183,6 +185,8 @@ def save_to_commands_file(commands):
 def get_language_code(language_name):
     if language_name in ['English', 'english', 'en']:
         return 'en-us'
+    if language_name in ['British English', 'british english', 'en-gb']:
+        return 'en-gb'
     if language_name in ['Russian', 'russian', 'ru', 'русский']:
         return 'ru'
     if language_name in ['Chinese', 'cn']:
@@ -197,6 +201,8 @@ def get_language_code(language_name):
 def get_language_name(language_name):
     if language_name in ['English', 'english', 'en']:
         return 'English'
+    if language_name in ['British English', 'british english', 'en-gb']:
+        return 'British English'
     if language_name in ['Russian', 'russian', 'ru', 'русский']:
         return 'Russian'
     if language_name in ['Chinese', 'cn']:
@@ -205,6 +211,62 @@ def get_language_name(language_name):
         return 'French'
     if language_name in ['German', 'de']:
         return 'German'
+    return None
+
+
+def find_best_vosk_model(language_code):
+    """
+    Find the best available VOSK model for the given language code.
+    Prefers lgraph models (support grammar constraints) over small models.
+    Returns model path if found, None to use auto-detection.
+    """
+    vosk_cache = HOME_DIR + '/.cache/vosk/'
+    if not os.path.exists(vosk_cache):
+        return None
+
+    # Priority order for models (best to worst)
+    # lgraph models support grammar constraints
+    model_priorities = {
+        'en-us': [
+            'vosk-model-en-us-0.42-gigaspeech',  # Largest, most accurate
+            'vosk-model-en-us-0.22-lgraph',      # Medium size, supports grammar
+            'vosk-model-en-us-0.22',             # Large but no grammar
+            'vosk-model-small-en-us-0.15',       # Small, no grammar
+        ],
+        'en-gb': [
+            'vosk-model-en-gb-0.1',
+            'vosk-model-small-en-gb-0.15',
+        ],
+        'ru': [
+            'vosk-model-ru-0.42',
+            'vosk-model-ru-0.22',
+            'vosk-model-small-ru-0.22',
+        ],
+        'cn': [
+            'vosk-model-cn-0.22',
+            'vosk-model-small-cn-0.22',
+        ],
+        'fr': [
+            'vosk-model-fr-0.22',
+            'vosk-model-small-fr-0.22',
+        ],
+        'de': [
+            'vosk-model-de-0.21',
+            'vosk-model-small-de-0.15',
+        ],
+    }
+
+    # Get priority list for this language
+    models_to_try = model_priorities.get(language_code, [])
+
+    # Check each model in priority order
+    for model_name in models_to_try:
+        model_path = os.path.join(vosk_cache, model_name)
+        if os.path.exists(model_path) and os.path.isdir(model_path):
+            print(f'Found VOSK model: {model_name}')
+            return model_path
+
+    # No specific model found, let VOSK auto-detect
     return None
 
 
@@ -334,7 +396,11 @@ def save_config(config_name, value):
 
 
 def get_default_config_values():
-    return json.dumps({'profile': '', Config.LANGUAGE: 'English'}, indent=4, ensure_ascii=False)
+    return json.dumps({
+        'profile': '',
+        Config.LANGUAGE: 'English',
+        Config.IGNORED_SINGLE_WORDS: ['the', 'a', 'an', 'but', 'their', 'there', 'they', 'be', 'to', 'of', 'and']
+    }, indent=4, ensure_ascii=False)
 
 
 def get_default_run_config_values():
