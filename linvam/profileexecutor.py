@@ -176,10 +176,11 @@ class ProfileExecutor(threading.Thread):
 
         # Filter out ignored single words (false positives from background noise)
         if self._is_ignored_single_word(result_string):
-            print(f'[Ignored single word: "{result_string}"]')
+            if self.p_parent.m_config[Config.DEBUG]:
+                print(f'[Ignored: "{result_string}"]')
             return
 
-        # Show detailed word-level confidence if available
+        # Show detailed word-level confidence if available (debug mode only)
         if result_detail:
             print(f'Recognized: {result_string}')
             if 'result' in result_detail:
@@ -250,20 +251,22 @@ class ProfileExecutor(threading.Thread):
         if language_code is None:
             print('Unsupported language: ' + language)
             return
-        print('Language: ' + get_language_name(language))
+        print(f'Language: {get_language_name(language)}')
 
         # Try to find the best available model (prefers lgraph for grammar support)
         model_path = find_best_vosk_model(language_code)
 
         if model_path:
             # Load specific model by path
-            print(f'Loading model from: {model_path}')
+            if self.p_parent.m_config[Config.DEBUG]:
+                print(f'[DEBUG] Loading model from: {model_path}')
             # Check if we should use faster endpoint detection
             self._configure_endpoint_detection(model_path)
             self.recognizer = KaldiRecognizer(Model(model_path=model_path), self.samplerate)
         else:
             # Fall back to auto-detection
-            print(f'Auto-detecting model for language code: {language_code}')
+            if self.p_parent.m_config[Config.DEBUG]:
+                print(f'[DEBUG] Auto-detecting model for language code: {language_code}')
             self.recognizer = KaldiRecognizer(Model(lang=language_code), self.samplerate)
 
         # Enable word-level details for better debugging
@@ -310,7 +313,8 @@ class ProfileExecutor(threading.Thread):
             # Write back
             with open(conf_path, 'w', encoding='utf-8') as f:
                 f.writelines(lines)
-            print('✓ Configured faster endpoint detection (0.3/0.6/0.9s silence thresholds)')
+            if self.p_parent.m_config[Config.DEBUG]:
+                print('[DEBUG] Configured faster endpoint detection (0.3/0.6/0.9s)')
 
     def _init_stream(self):
         if self.recognizer is None:
@@ -341,7 +345,8 @@ class ProfileExecutor(threading.Thread):
         self.m_profile = p_profile
         self.commands_list = []
         if self.m_profile is None:
-            print('Clearing profile')
+            if self.p_parent.m_config[Config.DEBUG]:
+                print('[DEBUG] Clearing profile')
             return
         w_commands = self.m_profile['commands']
         for w_command in w_commands:
@@ -351,7 +356,7 @@ class ProfileExecutor(threading.Thread):
                 variations = _expand_optional_brackets(part.strip())
                 for variation in variations:
                     self.commands_list.append(variation)
-        print('Profile: ' + self.m_profile['name'])
+        print(f'Profile: {self.m_profile["name"]} ({len(self.commands_list)} commands)')
         save_to_commands_file(self.commands_list)
         # this is a dirty fix until the whole keywords recognition is refactored
         self.commands_list.sort(key=len, reverse=True)
@@ -363,7 +368,8 @@ class ProfileExecutor(threading.Thread):
         # Resume listening if we were listening before
         if was_listening:
             self._start_stream()
-            print('Detection resumed')
+            if self.p_parent.m_config[Config.DEBUG]:
+                print('[DEBUG] Detection resumed')
 
     def _apply_grammar_constraint(self):
         """Apply grammar constraint to limit recognition to command vocabulary only."""
@@ -396,13 +402,11 @@ class ProfileExecutor(threading.Thread):
             # The debug output will show if unexpected words are recognized
             self.grammar_supported = True
 
-            print('\n' + '='*70)
-            print(f'  GRAMMAR CONSTRAINT APPLIED: {len(self.commands_list)} command variations')
-            print('='*70)
-            print('⚠ NOTE: Some lgraph models accept SetGrammar but ignore it.')
-            print('  Watch debug output for words NOT in your command list.')
-            print('  If you see unexpected words, grammar is NOT working.')
-            print('='*70 + '\n')
+            if self.p_parent.m_config[Config.DEBUG]:
+                print(f'[DEBUG] Grammar constraint applied ({len(self.commands_list)} command variations)')
+                print('[DEBUG] Note: Some models accept SetGrammar but ignore it')
+            else:
+                print(f'✓ Grammar constraint active ({len(self.commands_list)} commands)')
 
         except AttributeError as e:
             # SetGrammar method doesn't exist
@@ -414,25 +418,29 @@ class ProfileExecutor(threading.Thread):
     def _show_grammar_not_supported_warning(self, reason):
         """Show detailed warning when grammar constraints aren't supported."""
         self.grammar_supported = False
-        print('\n' + '!'*70)
-        print('  WARNING: GRAMMAR CONSTRAINT NOT WORKING')
-        print('!'*70)
-        print(f'Reason: {reason}')
-        print()
-        print('Your current VOSK model does NOT support grammar constraints.')
-        print('This means it will try to recognize ANY English words, not just')
-        print('your defined commands, which causes accuracy problems.')
-        print()
-        print('SMALL MODELS (vosk-model-small-*) DO NOT SUPPORT GRAMMAR.')
-        print()
-        print('To fix this, download a model that supports dynamic grammar:')
-        print()
-        print('  cd ~/.cache/vosk')
-        print('  wget https://alphacephei.com/vosk/models/vosk-model-en-us-0.22-lgraph.zip')
-        print('  unzip vosk-model-en-us-0.22-lgraph.zip')
-        print()
-        print('Then restart LinVAM.')
-        print('!'*70 + '\n')
+
+        if self.p_parent.m_config[Config.DEBUG]:
+            print('\n' + '!'*70)
+            print('  WARNING: GRAMMAR CONSTRAINT NOT WORKING')
+            print('!'*70)
+            print(f'Reason: {reason}')
+            print()
+            print('Your current VOSK model does NOT support grammar constraints.')
+            print('This means it will try to recognize ANY English words, not just')
+            print('your defined commands, which causes accuracy problems.')
+            print()
+            print('SMALL MODELS (vosk-model-small-*) DO NOT SUPPORT GRAMMAR.')
+            print()
+            print('To fix this, download a model that supports dynamic grammar:')
+            print()
+            print('  cd ~/.cache/vosk')
+            print('  wget https://alphacephei.com/vosk/models/vosk-model-en-us-0.22-lgraph.zip')
+            print('  unzip vosk-model-en-us-0.22-lgraph.zip')
+            print()
+            print('Then restart LinVAM.')
+            print('!'*70 + '\n')
+        else:
+            print('⚠ Warning: Grammar constraint not supported by this model')
 
     def reset_listening(self):
         if self.listening:
@@ -452,9 +460,6 @@ class ProfileExecutor(threading.Thread):
             else:
                 self._start_stream()
                 print('Detection started')
-                if not self.grammar_supported and self.p_parent.m_config[Config.DEBUG]:
-                    print('[DEBUG] Note: grammar_supported flag is False')
-                    print('[DEBUG] This may be incorrect - check for grammar constraint messages above')
                 self.listening = True
         elif self.listening and not p_enable:
             self._stop()
@@ -525,7 +530,8 @@ class ProfileExecutor(threading.Thread):
                 mouse.unhook(self.ptl_mouse_listener)
                 self.ptl_mouse_listener = None
         except Exception as ex:
-            print(str(ex))
+            if self.p_parent.m_config[Config.DEBUG]:
+                print(f'[DEBUG] Error stopping PTL listener: {ex}')
 
     def do_action(self, p_action):
         # {'name': 'key action', 'key': 'left', 'type': 0}
@@ -539,7 +545,8 @@ class ProfileExecutor(threading.Thread):
             case Command.KEY_ACTION:
                 self._press_key(p_action)
             case Command.PAUSE_ACTION:
-                print("Sleep ", p_action['time'])
+                if self.p_parent.m_config[Config.DEBUG]:
+                    print(f"[DEBUG] Sleep {p_action['time']}s")
                 time.sleep(p_action['time'])
             case Command.COMMAND_STOP_ACTION:
                 self._stop_command(p_action['command name'])
@@ -616,7 +623,7 @@ class ProfileExecutor(threading.Thread):
                 _os_mouse.press(w_button)
                 _os_mouse.release(w_button)
             case _:
-                print("Unknown mouse type " + w_type + " , skipping")
+                print(f"Warning: Unknown mouse type {w_type}, skipping")
 
     def _click_mouse_key_ydotool(self, p_action):
         w_type = p_action['type']
