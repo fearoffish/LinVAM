@@ -30,6 +30,8 @@ class MainWnd(QWidget):
         self.m_active_profile = None
         self.keyboard_listener = None
         self.mouse_listener = None
+        self.was_listening_before_edit = False
+        self.was_listening_before_keybind_edit = False
         self.ui = Ui_MainWidget()
         self.ui.setupUi(self)
         handle_args(self.m_config)
@@ -64,13 +66,25 @@ class MainWnd(QWidget):
 
         self._check_buttons_states()
 
-    def _edit_ptl_keybind(self):
+    def _edit_ptl_keybind(self, restart_listening=True):
         if self.keyboard_listener is None:
+            # Starting keybind recording - stop listening to avoid listener conflicts
+            self.was_listening_before_keybind_edit = self.m_profile_executor.listening
+            if self.was_listening_before_keybind_edit:
+                self.m_profile_executor.set_enable_listening(False)
+
             self.keyboard_listener = keyboard.hook(callback=self._on_keyboard_key_event)
             self.ui.btnEditKeybind.setText('Stop recording')
         else:
+            # Stopping keybind recording
             self._stop_keyboard_listener()
             self.ui.btnEditKeybind.setText('Edit keybind')
+
+            # Only restart listening if requested (manual stop, not from key press callback)
+            if restart_listening and hasattr(self, 'was_listening_before_keybind_edit') and \
+               self.was_listening_before_keybind_edit:
+                self.m_profile_executor.set_enable_listening(True)
+
         if self.mouse_listener is None:
             self.mouse_listener = mouse.hook(callback=self._on_mouse_key_event)
         else:
@@ -99,20 +113,28 @@ class MainWnd(QWidget):
     def _on_keyboard_key_event(self, event):
         if event.name == 'unknown':
             return
-        self._edit_ptl_keybind()
+        # Stop recording but don't restart listening yet
+        self._edit_ptl_keybind(restart_listening=False)
         event_code = event.scan_code
         event_name = event.name
         name = save_push_to_listen_hotkey(event_name, event_code, False)
         self.ui.pushToListenHotkey.setText(name.upper())
-        self.m_profile_executor.reset_listening()
+        # Restart listening with new hotkey if it was active before
+        if hasattr(self, 'was_listening_before_keybind_edit') and \
+           self.was_listening_before_keybind_edit:
+            self.m_profile_executor.reset_listening()
 
     def _on_mouse_key_event(self, event):
         if not isinstance(event, ButtonEvent):
             return
-        self._edit_ptl_keybind()
+        # Stop recording but don't restart listening yet
+        self._edit_ptl_keybind(restart_listening=False)
         name = save_push_to_listen_hotkey(event.button, '', True)
         self.ui.pushToListenHotkey.setText(name.upper())
-        self.m_profile_executor.reset_listening()
+        # Restart listening with new hotkey if it was active before
+        if hasattr(self, 'was_listening_before_keybind_edit') and \
+           self.was_listening_before_keybind_edit:
+            self.m_profile_executor.reset_listening()
 
     def _setup_input_mode(self):
         ptl_enabled = is_push_to_listen()
@@ -253,14 +275,25 @@ class MainWnd(QWidget):
         w_idx = self.ui.profileCbx.currentIndex()
         w_json_profile = self.ui.profileCbx.itemData(w_idx)
         w_profile = json.loads(w_json_profile)
+
+        # Stop listening before opening editor to prevent VOSK crashes
+        self.was_listening_before_edit = self.m_profile_executor.listening
+        if self.was_listening_before_edit:
+            self.m_profile_executor.set_enable_listening(False)
+
         w_profile_edit_wnd = ProfileEditWnd(w_profile, self)
         if w_profile_edit_wnd.exec() == QDialog.DialogCode.Accepted:
             w_profile = w_profile_edit_wnd.m_profile
+            # set_profile() will automatically restart listening if it was active before
             self.m_profile_executor.set_profile(w_profile)
             self.ui.profileCbx.setItemText(w_idx, w_profile['name'])
             w_json_profile = json.dumps(w_profile, ensure_ascii=False)
             self.ui.profileCbx.setItemData(w_idx, w_json_profile)
             self.save_to_database()
+        else:
+            # Dialog was cancelled - restart listening if it was active before editing
+            if self.was_listening_before_edit:
+                self.m_profile_executor.set_enable_listening(True)
 
     def slot_copy_profile(self):
         text, ok_pressed = QInputDialog.getText(self, "Copy profile", "Enter new profile name:",

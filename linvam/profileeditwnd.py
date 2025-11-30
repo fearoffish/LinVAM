@@ -140,7 +140,9 @@ class ProfileEditWnd(QDialog):
             w_commands.append(w_command)
         self.m_profile['commands'] = w_commands
 
+        # Don't restart listening here - let set_profile() handle it
         super().accept()
 
     def slot_cancel(self):
+        # Don't restart listening here - let main window handle it
         super().reject()
